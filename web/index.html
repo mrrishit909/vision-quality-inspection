@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vision Quality Inspection</title>
+<link rel="stylesheet" href="kit.css">
+<style>
+.verdict { margin:0 0 6px; font-size:15px; } .why { margin:0 0 10px; color:var(--mute); }
+.tiles { display:flex; flex-wrap:wrap; gap:10px; }
+.tile { width:112px; font-size:11.5px; color:var(--mute); }
+.tile .px { position:relative; width:112px; height:112px; border-radius:6px; overflow:hidden; border:1px solid var(--line); }
+.tile img { width:112px; height:112px; image-rendering:pixelated; display:block; }
+.tile svg { position:absolute; inset:0; }
+.tile b { color:var(--text); font-weight:600; }
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>Vision Quality Inspection</h1>
+  <span class="sub">An invented controller-board line with one camera at 30 frames a second. A patch-memory anomaly model trained on good boards and 24 labelled defects, deployed to an edge simulator; a supplier change, an operator's review, a retrained model as a canary, and a promotion gate, each scored against the simulation truth.</span>
+  <span class="mode">…</span>
+  <button class="primary" id="runall">Run all steps</button>
+</header>
+<main>
+  <nav class="steps"></nav>
+  <div><div id="steps"></div></div>
+</main>
+<footer>Every image is rendered by a generator in this repository: no real line, camera or part. The generator knows which boards are defective; that truth is shown only to judge the model and is never used by it. The operator at the review station is a stand-in that labels from the truth with deliberate mistakes. No outside model or service is called.</footer>
+<script src="kit.js"></script>
+<script>
+const P = v => fmt.pct(v, 1);
+const NAME = { missing_component: 'missing component', solder_bridge: 'solder bridge', scratch: 'scratch', seal_gap: 'seal gap', contamination: 'contamination', wrinkle: 'wrinkle', dent: 'dent', missing_hole: 'missing hole' };
+const overlay = (map, bbox) => { if (!map) return ''; const mx = Math.max(...map), s = 112 / 64; let g = '';
+  map.forEach((v, k) => { const o = Math.max(0, (v / mx - 0.45) / 0.55); if (o > 0.02) g += `<rect x="${(k % 15) * 4 * s}" y="${Math.floor(k / 15) * 4 * s}" width="${8 * s}" height="${8 * s}" fill="#b0634e" opacity="${(0.45 * o).toFixed(2)}"/>`; });
+  if (bbox) g += `<rect x="${bbox[0] * s}" y="${bbox[1] * s}" width="${bbox[2] * s}" height="${bbox[3] * s}" fill="none" stroke="#e8b04a" stroke-width="2"/>`;
+  return `<svg viewBox="0 0 112 112" width="112" height="112">${g}</svg>`; };
+const tile = (png, caption, map, bbox) => `<div class="tile"><div class="px"><img src="${png}" alt="">${overlay(map, bbox)}</div>${caption}</div>`;
+const armRow = (name, a) => ({ name: `${name} · v${a.version}`, frames: a.frames, reject: a.reject_rate, audit: `${a.audit_found} of ${a.audited}`, fr: a.simulation_truth.false_reject_rate, frn: a.simulation_truth.false_reject_rate_new_supplier, esc: `${a.simulation_truth.escapes}/${a.simulation_truth.defective}`, escn: `${a.simulation_truth.escapes_new_supplier[0]}/${a.simulation_truth.escapes_new_supplier[1]}` });
+const armCols = [{ k: 'name', label: 'Model' }, { k: 'frames', label: 'Frames', num: 1, f: v => fmt.n(v) }, { k: 'reject', label: 'Rejected', num: 1, f: P }, { k: 'audit', label: 'Audit found', num: 1 },
+  { k: 'fr', label: 'Truth: good rejected', num: 1, f: P }, { k: 'frn', label: '… new supplier', num: 1, f: v => v == null ? '–' : P(v) }, { k: 'esc', label: 'Truth: defects passed', num: 1 }, { k: 'escn', label: '… new supplier', num: 1 }];
+const latency = s => kpis([{ label: 'Frames', value: fmt.n(s.frames), sub: `${s.seconds_of_line} s of line at 30 FPS` }, { label: 'Inspection time p50 · p99', value: `${s.latency_ms.p50} · ${s.latency_ms.p99} ms`, sub: `budget ${s.budget_ms} ms a frame` }, { label: 'Frames over budget', value: fmt.n(s.frames_over_budget), sub: `worst ${s.latency_ms.max} ms` }, { label: 'Edge busy', value: P(s.edge_utilisation_at_30fps), sub: `capacity about ${fmt.n(s.capacity_fps)} FPS` }, { label: 'Yield', value: P(s.yield), sub: `${fmt.n(s.rejected)} rejected` }]);
+const R = {
+  load: j => { const r = j.result; return kpis([{ label: 'Product', value: esc(r.product.split(' (')[0]) }, { label: 'Camera', value: `${r.camera.fps} FPS`, sub: r.camera.pixels + ' pixels' }, { label: 'Good boards', value: r.training_set.good, sub: `+ ${r.training_set.calibration_good} held back for the threshold` }, { label: 'Labelled defects', value: r.training_set.labelled_defects, sub: r.training_set.defect_types.map(t => NAME[t]).join(', ') }])
+    + card('A good board and one of each defect', `<div class="tiles">${r.examples.map(e => tile(e.png, `<b>${esc(NAME[e.label] || e.label)}</b>`)).join('')}</div>`); },
+  v1: j => { const r = j.result; return kpis([{ label: 'Version', value: r.version, sub: `sha256 ${r.sha256}…` }, { label: 'Threshold', value: fmt.n(r.threshold, 2), sub: `${P(r.calibration_false_reject)} of held-back good boards over it` }, { label: 'Labelled defects caught', value: `${r.labelled_defects_caught} of ${r.labelled_defects}`, sub: `golden template: ${r.baseline_labelled_caught}` }, { label: 'Type named right', value: P(r.type_accuracy_cv), sub: 'cross-validated on the labelled 24' }, { label: 'Artifact', value: `${fmt.n(r.artifact_kb / 1024, 1)} MB`, sub: `trained in ${r.train_seconds} s` }])
+    + card('Labelled defects caught, by type', table([{ k: 't', label: '' }, { k: 'c', label: 'Caught', num: 1 }], Object.entries(r.by_type_caught).map(([t, [c, n]]) => ({ t: NAME[t], c: `${c} of ${n}` }))) + `<p class="why" style="margin-top:8px">Missing parts and solder bridges change a whole patch; a one-pixel scratch changes a few pixels of it, often by less than the lamp's flicker. The model catches ${r.by_type_caught.scratch[0]} of ${r.by_type_caught.scratch[1]} labelled scratches, and the page says so before the line starts.</p>`); },
+  dep1: d => card('Deployed', `<p class="verdict">${badge('active', 'good')} version ${d.version}, ${d.mode}, all frames. The edge checked the artifact's hash before loading it.</p>`),
+  s1: j => { const s = j.result, c = s.by_arm.control, t = c.simulation_truth; return latency(s)
+    + card('Rejected, per 10 seconds of line', lineChart([{ name: 'share of frames rejected', points: s.timeline.map(x => [x.second, x.control_reject_rate]), color: PALETTE[3], width: 2 }, { name: 'boards with the new supplier\'s capacitors', points: s.timeline.map(x => [x.second, x.new_supplier_share]), color: '#7d8a84', dash: 1 }], { h: 180, ymin: 0, ymax: 1, yfmt: x => fmt.pct(x), xfmt: x => `${fmt.n(x)} s` })
+      + `<p class="why" style="margin-top:8px">Before the change the line rejected about ${P(s.timeline[0].control_reject_rate)} of frames; after it, ${P(s.timeline.at(-1).control_reject_rate)}. The new capacitors are good parts, but the model has never seen them, and it rejected ${P(t.false_reject_rate_new_supplier)} of them.</p>`)
+    + card('What the line can see, and what only the simulation knows', table(armCols, [armRow('All frames', c)]) + `<p class="why" style="margin-top:8px">The auditor checked ${c.audited} passed boards and found ${c.audit_found} escapes. The truth: ${t.escapes} of ${t.defective} defective boards passed, ${t.escapes_by_type.scratch ? `${t.escapes_by_type.scratch[0]} of them scratches` : ''}.</p>`); },
+  defects: d => card('The most anomalous rejects, with the anomaly map and the box', `<div class="tiles">${d.items.map(i => tile(i.png, `<b>${esc(NAME[i.defect_type])}</b> · ${fmt.pct(i.confidence)}<br>score ${i.score}`, i.map, i.bbox)).join('')}</div>`
+    + `<p class="why" style="margin-top:10px">Rejects by the type the classifier named: ${d.pareto.map(p => `${NAME[p.defect_type]} ${fmt.n(p.n)}`).join(' · ')}. Most of the "missing components" and "scratches" are new-supplier boards: a classifier trained on three defect types names every anomaly as one of them.</p>`),
+  queue: q => card(`Review queue · ${q.items.length} of ${fmt.n(q.candidates)} rejects`, `<p class="why">Clustered by what is wrong with them; the most typical frames of each cluster, largest cluster first.</p>`),
+  review: r => card(`The operator's verdicts · ${r.false_positives} false positives, ${r.confirmed_defects} real defects`, `<div class="tiles">${r.items.map(i => tile(i.png, `${badge(i.verdict === 'false_positive' ? 'good part' : 'defect', i.verdict === 'false_positive' ? 'good' : 'bad')}<br>model said ${esc(NAME[i.model_says])}`)).join('')}</div>`
+    + `<p class="why" style="margin-top:10px">The stand-in operator labels from the simulation truth and got ${r.operator_mistakes} of ${r.recorded} wrong (it is set to err 2% of the time). Wrong verdicts go into the next model like right ones.</p>`),
+  v2: j => { const r = j.result; return kpis([{ label: 'Version', value: r.version, sub: `sha256 ${r.sha256}…` }, { label: 'Good boards from review', value: r.training.feedback_good, sub: `${r.training.feedback_defects} confirmed defects to the classifier` }, { label: 'Positions adapted', value: `${r.adapted_positions} of 225`, sub: 'only where the reviewed boards looked wrong' }, { label: 'Labelled defects caught', value: `${r.labelled_defects_caught} of ${r.labelled_defects}` }]); },
+  dep2: d => card('Canary', `<p class="verdict">${badge('canary', 'warn')} version ${d.version} on ${P(d.share)} of frames, beside version 1.</p>`),
+  s2: j => { const s = j.result, a = s.by_arm; return latency(s)
+    + card('Canary against control, the same 100 seconds', table(armCols, [armRow('Control', a.control), armRow('Canary', a.canary)])
+      + `<p class="why" style="margin-top:8px">The canary rejects ${P(a.canary.reject_rate)} of its frames against the control's ${P(a.control.reject_rate)}. It also lets more defects through: ${a.canary.simulation_truth.escapes} of ${a.canary.simulation_truth.defective} against ${a.control.simulation_truth.escapes} of ${a.control.simulation_truth.defective}. Part of that is an illusion: the control rejects every new-supplier board, and with it every defect on one (${a.control.simulation_truth.escapes_new_supplier[0]} of ${a.control.simulation_truth.escapes_new_supplier[1]} passed). On new-supplier boards the canary passed ${a.canary.simulation_truth.escapes_new_supplier[0]} of ${a.canary.simulation_truth.escapes_new_supplier[1]} defects.</p>`); },
+  promote: p => { const g = p.gate; return card(p.status === 'promoted' ? `Promoted · version ${p.version} is now on every frame` : 'Promotion refused', `<p class="verdict">${badge(g.reject_rate_lower ? 'rejects fewer' : 'rejects more', g.reject_rate_lower ? 'good' : 'bad')} ${badge(g.audit_escapes_not_worse ? 'audit: no worse' : 'audit: worse', g.audit_escapes_not_worse ? 'good' : 'bad')}</p>`
+    + `<p class="why">The gate saw what the line can see: rejects (${P(g.canary.reject_rate)} against ${P(g.control.reject_rate)}) and the audit sample (${g.canary.audit_found} escapes in ${g.canary.audited} canary boards, ${g.control.audit_found} in ${g.control.audited} control boards). An audit of 5% of passed boards over 100 seconds is a few dozen boards, in which a passed defect turns up less than once; it is far too small to tell the two models' escape rates apart. The truth table above shows what it could not.</p>`); },
+  quality: q => card('Line quality by stretch and model', table([{ k: 'run', label: 'Stretch' }, { k: 'arm', label: 'Arm' }, { k: 'version', label: 'Model', num: 1, f: v => `v${v}` }, { k: 'reject_rate', label: 'Rejected', num: 1, f: P }, { k: 'truth_false_reject_rate', label: 'Truth: false rejects', num: 1, f: P }, { k: 'truth_escape_rate', label: 'Truth: escapes', num: 1, f: P }],
+    q.runs.flatMap((r, i) => Object.entries(r.by_arm).map(([arm, a]) => ({ run: i ? 'second 100 s' : 'first 100 s', arm, ...a }))))),
+  audit: a => card(`Audit log · hash chain ${a.chain_valid ? 'verifies' : 'BROKEN'}`, table([{ k: 'at', label: 'When', f: v => fmt.time(v) }, { k: 'action', label: 'Action', f: v => `<span class="mono">${esc(v)}</span>` },
+    { k: 'detail', label: 'Detail', f: d => `<span class="small">${esc(Object.entries(d).filter(([, v]) => typeof v !== 'object').map(([k, v]) => `${k}: ${v}`).join(' · ').slice(0, 130))}</span>` }], a.events.slice().reverse())),
+};
+const demo = new Demo(R); demo.init();
+</script>
+</body>
+</html>

@@ -1,0 +1,168 @@
+{
+ "service": "vision-quality-inspection",
+ "run": "demo-1",
+ "tokens": {
+  "manager": "plant-quality_manager-demo",
+  "engineer": "plant-quality_engineer-demo",
+  "operator": "plant-operator-demo",
+  "viewer": "plant-viewer-demo"
+ },
+ "steps": [
+  {
+   "title": "A new line, and what it knows on day one",
+   "say": "An invented controller-board line with one top camera at 30 frames a second. On day one there are 200 good boards from the first shift, 24 labelled defects (eight missing components, eight solder bridges, eight scratches) and 150 more good boards held back to set the threshold. Every image comes from a generator in the repository, with the lamp's brightness, a gradient, sensor noise and the board a pixel or two off centre changing from frame to frame.",
+   "calls": [
+    {
+     "key": "load",
+     "as": "manager",
+     "method": "POST",
+     "path": "/v1/lines:load",
+     "body": {
+      "seed": 14,
+      "product": "pcb"
+     }
+    }
+   ]
+  },
+  {
+   "title": "Train on good parts, deploy to the edge",
+   "say": "The anomaly model learns what normal looks like, patch by patch, from the good boards only: every 8 x 8 patch becomes a short vector, and the vectors from good boards are kept per position as a memory bank. A new board is as wrong as its least normal patch. The threshold is set so that 1% of the held-back good boards would be rejected. A small classifier names the defect type from the 24 labelled ones. The version is stored with its hash and deployed to the line's edge, which checks the hash before loading it.",
+   "calls": [
+    {
+     "key": "v1",
+     "as": "engineer",
+     "method": "POST",
+     "path": "/v1/models/train",
+     "body": {
+      "target_false_reject": 0.01,
+      "include_feedback": false
+     }
+    },
+    {
+     "key": "dep1",
+     "as": "engineer",
+     "method": "POST",
+     "path": "/v1/deployments",
+     "body": {
+      "model_version_id": "{{v1.result.model_version_id}}",
+      "mode": "full"
+     }
+    }
+   ]
+  },
+  {
+   "title": "100 seconds of the line, and a supplier change",
+   "say": "3,000 frames at 30 a second, 3% of boards defective. Halfway through, purchasing switches capacitor supplier: the new parts are good, but their bodies are lighter and a pixel wider. Every frame's inspection time is measured against the 33 ms a frame allows. A quality auditor pulls 5% of the passed boards for a manual check, which is the only way the line ever learns about escapes.",
+   "calls": [
+    {
+     "key": "s1",
+     "as": "engineer",
+     "method": "POST",
+     "path": "/v1/inspections",
+     "body": {
+      "frames": 3000,
+      "defect_rate": 0.03,
+      "supplier_change_at": 1500,
+      "stream_seed": 101
+     }
+    },
+    {
+     "key": "defects",
+     "as": "viewer",
+     "method": "GET",
+     "path": "/v1/defects?run_id={{s1.result.run_id}}&limit=8"
+    }
+   ]
+  },
+  {
+   "title": "The operator reviews 40 rejects",
+   "say": "Nobody can look at a thousand rejects. The review queue clusters them by what is wrong and takes the most typical frames of each cluster, 40 in all. The person at the review station marks each a false positive or a real defect; here a stand-in labels them from the simulation truth and gets 2% of them wrong, as a tired person would.",
+   "calls": [
+    {
+     "key": "queue",
+     "as": "operator",
+     "method": "GET",
+     "path": "/v1/review-queue?run_id={{s1.result.run_id}}&budget=40"
+    },
+    {
+     "key": "review",
+     "as": "operator",
+     "method": "POST",
+     "path": "/v1/review-queue:simulate-operator",
+     "body": {
+      "run_id": "{{s1.result.run_id}}",
+      "budget": 40,
+      "error_rate": 0.02
+     }
+    }
+   ]
+  },
+  {
+   "title": "Retrain, and a canary on a fifth of the line",
+   "say": "Version 2 adds the boards the operator passed to the memory bank, but only at the positions where they looked wrong, so the model learns the new capacitor without growing blind elsewhere. It goes out as a canary on 20% of frames beside version 1, and the line runs another 3,000 frames, now with the second supplier's parts on most boards.",
+   "calls": [
+    {
+     "key": "v2",
+     "as": "engineer",
+     "method": "POST",
+     "path": "/v1/models/train",
+     "body": {
+      "target_false_reject": 0.01,
+      "include_feedback": true
+     }
+    },
+    {
+     "key": "dep2",
+     "as": "engineer",
+     "method": "POST",
+     "path": "/v1/deployments",
+     "body": {
+      "model_version_id": "{{v2.result.model_version_id}}",
+      "mode": "canary",
+      "share": 0.2
+     }
+    },
+    {
+     "key": "s2",
+     "as": "engineer",
+     "method": "POST",
+     "path": "/v1/inspections",
+     "body": {
+      "frames": 3000,
+      "defect_rate": 0.03,
+      "supplier_change_at": 0,
+      "stream_seed": 202
+     }
+    }
+   ]
+  },
+  {
+   "title": "Promote behind a gate, and what the gate could not see",
+   "say": "The quality manager promotes the canary only if it rejects fewer boards and its audit sample shows no more escapes than the control's. Both are things the line can observe. The simulation truth sits alongside: what the audit sample was too small to see.",
+   "calls": [
+    {
+     "key": "promote",
+     "as": "manager",
+     "method": "POST",
+     "path": "/v1/deployments/{{dep2.deployment_id}}/promote",
+     "body": {
+      "run_id": "{{s2.result.run_id}}",
+      "note": "Canary rejects far fewer new-supplier boards; audit sample clean"
+     }
+    },
+    {
+     "key": "quality",
+     "as": "viewer",
+     "method": "GET",
+     "path": "/v1/lines/{{load.result.line_id}}/quality"
+    },
+    {
+     "key": "audit",
+     "as": "manager",
+     "method": "GET",
+     "path": "/v1/audit?limit=14"
+    }
+   ]
+  }
+ ]
+}
