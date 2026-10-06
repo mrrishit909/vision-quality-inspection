@@ -1,7 +1,8 @@
 # Performance
 
 Docker stack (one uvicorn process, one worker, Postgres 16) after the demo: 6,000 inspected frames, 374 training images, two model
-versions. Client and server on the same machine (arm64, 12 cores). Reproduce with `make demo`, then `make load-test`.
+versions. Client and server on the same machine (arm64, 12 cores). Reproduce with `make demo`, then `make load-test` (the quality read);
+the defects read was run by hand with `core.loadtest` against the first run's id, which changes with every demo.
 
 ## The edge: inspection time per frame, measured inside the stream job
 
